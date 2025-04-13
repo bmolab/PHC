@@ -1,20 +1,19 @@
-# Base Neural Networks
+# How PHC Works
 
-im  - single model 
-im_big - single model 
+The main file that starts simulation is phc/run_hydra.py. A nice introduction to the file is https://github.com/Denys88/rl_games/blob/master/docs/ISAAC_GYM.md.
 
-im_pnn - Progressive neural network 
-im_pnn_big - Progressive neural network 
+# Converting Files To PHC Readables
 
-im_mcp - Composer after training PNNS
-im_mcp_big - Composer after training PNNS
+PHC converts files prior to loading it (refer to the READ.ME). AMASS files need to be converted by using scripts/data_process/convert_amass_data.py to pkl files before loading into running for run_hydra.py.
 
-# Environments
-Different environments to run the models in. Specifies different environment properties such as humanoid parameters...
-
-- 
+A module could be created to be created in dpg system to load and convert to the pkl format and preprocess.
 
 
-# Tasks
+# Sample Command
 
-The task the we are trying to accomplish.
+```
+python phc/run_hydra.py learning=im_mcp_big learning.params.network.ending_act=False exp_name=phc_comp_kp_2 env.obs_v=7 env=env_im_getup_mcp robot=smpl_humanoid robot.real_weight_porpotion_boxes=False env.motion_file=sample_data/accad.pkl env.models=['output/HumanoidIm/phc_kp_2/Humanoid.pth'] env.num_prim=3 env.num_envs=1  headless=False epoch=-1 test=True
+```
+
+# Pulling Data For DPG System
+Pulling out data for dpg system will require modifying the phc/run_hydra.py and files related. Specifically the main workings of the runner.run in phc/run_hydra.py is in phc/learing/im_amp_players.py def run function.
