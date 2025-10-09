@@ -17,3 +17,12 @@ python phc/run_hydra.py learning=im_mcp_big learning.params.network.ending_act=F
 
 # Pulling Data For DPG System
 Pulling out data for dpg system will require modifying the phc/run_hydra.py and files related. Specifically the main workings of the runner.run in phc/run_hydra.py is in phc/learing/im_amp_players.py def run function.
+
+# Run real-time webcam Demo
+
+See the [video_to_control_demo.md](docs\video_to_control_demo.md)
+
+The key config parameter which leads to where to get the torque and force data are: 
+- config file: env=env_im_getup_mcp_test
+- task type: env.task=HumanoidImMCPDemo 
+- env.obs_v=7 
