@@ -1523,7 +1523,7 @@ class Humanoid(BaseTask):
             # actions *= 0
         if flags.debug:
             print("\nhumanoid.py pre_physics_step actions")
-            print(actions[0][0: 8])
+            # print(actions[0][0: 8])
         self.actions = actions.to(self.device).clone()
 
         if self.collect_dataset:

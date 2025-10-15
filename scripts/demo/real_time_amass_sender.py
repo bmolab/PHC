@@ -1,5 +1,6 @@
-#!/usr/bin/env python3
 import os
+import sys
+sys.path.append(os.getcwd())
 import os.path as osp
 import time
 import json
@@ -15,7 +16,11 @@ from datetime import datetime
 from poselib.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonState
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 
-AMASS_PKL = "data/amass_test/amass_single_motion.pkl"   
+import threading, signal
+stop_event = threading.Event()
+bg_thread = None
+
+AMASS_PKL = "phc/data/amass_test/amass_single_motion.pkl"   
 HOST = "0.0.0.0"
 PORT = 8080
 
@@ -27,7 +32,7 @@ bbox, pose_mat, j3d, j2d, trans, dt, ws_talkers, reset_offset, offset_height, im
 superfast = True
 
 SKELETON_XML_PATH = "phc/data/assets/mjcf_test/smpl_humanoid.xml"
-_skeleton_tree: SkeletonTree | None = None
+_skeleton_tree = None
 
 
 def _ensure_skeleton_tree():
@@ -122,9 +127,13 @@ def stream_amass_realtime(pkl_path: str):
     print(f"Loaded motion '{key}': {N} frames @ {fps} FPS")
     interval = 1.0 / max(1, fps)
 
-    while True:
+    while not stop_event.is_set():
         t_loop = time.time()
         for i in range(N):
+            
+            if stop_event.is_set():
+                break
+            
             t0 = time.time()
             try:
                 joints_24x3 = _fk_to_joints_frame(
@@ -147,7 +156,7 @@ def stream_amass_realtime(pkl_path: str):
             elapsed = time.time() - t0
             sleep_t = interval - elapsed
             if sleep_t > 0:
-                time.sleep(sleep_t)
+                stop_event.wait(timeout=sleep_t)
 
         # Optional: loop seamlessly
         loop_elapsed = time.time() - t_loop
@@ -207,6 +216,18 @@ async def talk_websocket_handler(request):
     print("Websocket TALK connection closed")
     return ws
 
+#To preventing port being occupied when accidently stop the script
+async def on_startup(app):
+    global bg_thread
+    bg_thread = threading.Thread(target=stream_amass_realtime,args=(AMASS_PKL,),daemon=True)
+    bg_thread.start()
+
+async def on_shutdown(app):
+    stop_event.set()
+    if bg_thread and bg_thread.is_alive():
+        bg_thread.join(timeout=5)
+        
+    
 
 def main():
     # Start realtime AMASS 
@@ -217,6 +238,9 @@ def main():
     app.router.add_route('GET', '/ws', websocket_handler)
     app.router.add_route('GET', '/ws_talk', talk_websocket_handler)
     app.router.add_route('GET', '/get_pose', pose_getter)
+    
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
 
     print("==============================================================")
     print(" AMASS Pose Stream Server  started ")
@@ -227,7 +251,10 @@ def main():
     print(f"   http://<{HOST}>:{PORT}/get_pose")
     print("==============================================================")
 
-    web.run_app(app, host=HOST, port=PORT)
+    try:
+        web.run_app(app, host=HOST, port=PORT)
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

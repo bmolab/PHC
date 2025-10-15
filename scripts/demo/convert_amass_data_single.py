@@ -1,5 +1,6 @@
-#!/usr/bin/env python3
 import os
+import sys
+sys.path.append(os.getcwd())
 import os.path as osp
 import argparse
 import numpy as np
@@ -7,7 +8,6 @@ import joblib
 import torch
 from scipy.spatial.transform import Rotation as sRot
 
-# poselib / smpl_sim deps (same as your original script)
 from poselib.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
@@ -113,16 +113,17 @@ def convert_one_npz(npz_path: str, out_pkl: str, upright_start: bool = False):
     key_name = f"0-{parent}_{base}"
 
     joblib.dump({key_name: out}, out_pkl, compress=True)
-    print(f"Wrote {out_pkl} with key '{key_name}' ({N} frames @ {fps} FPS)")
+    print(f"Wrote {os.path.abspath(out_pkl)} with key '{key_name}' ({N} frames @ {fps} FPS)")
+    
 
 def main():
     parser = argparse.ArgumentParser(description="Convert a single AMASS .npz to SMPL-based motion pickle.")
     parser.add_argument("--npz", required=True, help="Path to a single AMASS .npz file")
-    parser.add_argument("--out", default="amass_single_motion.pkl", help="Output .pkl path")
+    parser.add_argument("--out", default="phc/data/amass_test/amass_single_motion.pkl", help="Output .pkl path")
     parser.add_argument("--upright", action="store_true", help="Apply upright_start correction")
     args = parser.parse_args()
 
     convert_one_npz(args.npz, args.out, upright_start=args.upright)
-
+ 
 if __name__ == "__main__":
     main()

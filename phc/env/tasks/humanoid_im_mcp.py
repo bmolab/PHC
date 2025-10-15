@@ -4,7 +4,6 @@ import phc.env.tasks.humanoid_im as humanoid_im
 
 from isaacgym.torch_utils import *
 from isaacgym import gymtorch
-
 from phc.utils.flags import flags
 from rl_games.algos_torch import torch_ext
 import torch.nn as nn
@@ -115,9 +114,10 @@ class HumanoidImMCP(humanoid_im.HumanoidIm):
         if self.dr_randomizations.get('observations', None):
             self.obs_buf = self.dr_randomizations['observations']['noise_lambda'](self.obs_buf)
 
-        # Testing torque & force function 
-        test_sensor_tensor = self.gym.acquire_force_sensor_tensor(self.sim)
-        sensors_per_env = len(self.force_sensor_joints)
-        test_vec_sensor_tensor = gymtorch.wrap_tensor(test_sensor_tensor).view(self.num_envs, sensors_per_env * 6)
-        print(f'test_vec_sensor_tensor={test_vec_sensor_tensor}')
-        
+        # #  humanoid_asset = self.gym.load_asset(self.sim, asset_root, asset_file_real, asset_options)
+        # #num of sensors
+    
+        # # sensors_per_env = len(self.force_sensor_joints)
+        # test_force_sensor_tensor = self.gym.acquire_force_sensor_tensor(self.sim)
+        # test_ec_sensor_tensor = gymtorch.wrap_tensor(test_force_sensor_tensor)
+        # print('test_force_sensor_tensor=',test_ec_sensor_tensor)

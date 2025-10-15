@@ -76,7 +76,7 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
                         await ws.close()
                         break
                     else:
-                        print(msg.data)
+                        # print(msg.data)
                         try:
                             msg = json.loads(msg.data)
                             if msg['action'] == 'reset':
@@ -268,6 +268,8 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
                 if parent != -1:
                     limb_lengths.append(np.linalg.norm(ref_rb_pos[:, parent] - ref_rb_pos[:, i], axis = -1))
             limb_lengths = np.array(limb_lengths).transpose(1, 0)
+            # print(limb_lengths)
+            # print(self.mean_limb_lengths)
             scale = (limb_lengths/self.mean_limb_lengths).mean(axis = -1)
             ref_rb_pos /= scale[:, None, None]
             ############################## Limb Length ##############################
