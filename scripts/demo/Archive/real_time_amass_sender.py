@@ -24,15 +24,17 @@ AMASS_PKL = "phc/data/amass_test/amass_single_motion.pkl"
 HOST = "0.0.0.0"
 PORT = 8080
 
-# Globals expected by existing receivers in demo code
+SKELETON_XML_PATH = "phc/data/assets/mjcf_test/smpl_humanoid.xml"
+_skeleton_tree = None
+
+
+# Globals expected by existing receivers in demo code (reference in scripts\demo\video_to_pose_server.py)
 bbox, pose_mat, j3d, j2d, trans, dt, ws_talkers, reset_offset, offset_height, images_acc, recording, sim_talker, num_ppl, fps = (
     np.zeros([5, 4]), np.zeros([24, 3, 3]), np.zeros([5, 24, 3]), None, np.zeros([3]),
     1 / 10, [], True, 0.92, deque(maxlen=24000), False, None, 0, 0
 )
 superfast = True
 
-SKELETON_XML_PATH = "phc/data/assets/mjcf_test/smpl_humanoid.xml"
-_skeleton_tree = None
 
 
 def _ensure_skeleton_tree():
