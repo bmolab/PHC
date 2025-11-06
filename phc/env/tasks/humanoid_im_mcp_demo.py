@@ -28,6 +28,9 @@ import scipy.ndimage.filters as filters
 from smpl_sim.utils.transform_utils import quat_correct_two_batch
 import subprocess
 
+#to test
+from scripts.demo.TorqueForceSender import TorqueForceSender
+
 SERVER = "0.0.0.0"
 smpl_2_mujoco = [0, 1, 4, 7, 10, 2, 5, 8, 11, 3, 6, 9, 12, 15, 13, 16, 18, 20, 22, 14, 17, 19, 21, 23]
 
@@ -64,6 +67,25 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
         flags.show_traj = True
         self.close_distance = 0.5
         self.mean_limb_lengths = np.array([0.1061, 0.3624, 0.4015, 0.1384, 0.1132], dtype=np.float32)[None, :]
+        
+        
+        # To test: TorqueForceSender to send out torque force
+        if cfg["env"].get("log_forces", False):
+            print(f'{'*'*3}"Starting TorqueForceSender streaming')
+            self.osc_sender = TorqueForceSender(
+                host="127.0.0.1",
+                port=9000,
+                fps=cfg["env"].get("fps", 30),
+                joint_names=self._dof_names,
+                sensor_names=getattr(self, "force_sensor_joints", []),
+            )
+            self.osc_sender.start(
+                get_torques=lambda: self.dof_force_tensor[0].detach().cpu().numpy(),
+                get_wrenches=(
+                    lambda: self.vec_sensor_tensor[0].detach().cpu().numpy()
+                    if self.self_obs_v == 3 else None
+                ),
+            )
         
     async def talk(self):
         URL = f'http://{SERVER}:8080/ws'

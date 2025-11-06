@@ -116,6 +116,9 @@ class Humanoid(BaseTask):
         self.cfg["device_id"] = device_id
         self.cfg["headless"] = headless
 
+        # To test:
+        self.log_forces = cfg["env"].get("log_forces", False)
+
 
         super().__init__(cfg=self.cfg)
 
@@ -191,7 +194,7 @@ class Humanoid(BaseTask):
         
 
         dof_force_tensor = self.gym.acquire_dof_force_tensor(self.sim)
-        self.dof_force_tensor = gymtorch.wrap_tensor(dof_force_tensor).view(self.num_envs, self.num_dof)
+        self.dof_force_tensor = gymtorch.wrap_tensor(dof_force_tensor).view(self.num_envs, self.num_dof) #shape: [num_envs, num_dof]
 
         self.gym.refresh_dof_state_tensor(self.sim)
         self.gym.refresh_actor_root_state_tensor(self.sim)
@@ -1640,6 +1643,19 @@ class Humanoid(BaseTask):
             self._update_tensor_history()
             
         self._refresh_sim_tensors()
+        
+        #To test: 
+        #get torque/force after updates all Isaac tensors for the current simulation step
+        if getattr(self, "log_forces", False):
+            env_id = 0
+            torques = self.dof_force_tensor[env_id].clone()
+            if self.self_obs_v == 3:
+                n_sensors = len(self.force_sensor_joints)
+                force_torques = self.vec_sensor_tensor[env_id].view(n_sensors, 6).clone()
+                print(f"{'-'*3}Env {env_id} Torques: {torques[:6]} ...")
+                print(f"{'-'*3}Env {env_id} Forces/Torques (Fx,Fy,Fz,Tx,Ty,Tz): {force_torques}")
+        
+    
         self._compute_reward(self.actions)  # ZL swapped order of reward & objecation computes. should be fine.
         self._compute_reset() 
         
