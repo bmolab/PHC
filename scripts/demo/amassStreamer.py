@@ -21,13 +21,14 @@ NUM_JOINTS = 24  # Standard SMPL joint count
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class AmassStreamer:
-    def __init__(self, npz_path, smpl_model_path, auto_ground=True, frame_rate=30):
+    def __init__(self, npz_path, smpl_model_path, auto_ground=True, frame_rate=60, use_neutral_shape=True):
         self.frame_rate = frame_rate
         self.dt = 1.0 / frame_rate
         self.current_frame = 0
         self.auto_ground = auto_ground
+        self.use_neutral_shape = use_neutral_shape
         
-        print(f"--- Initializing AMASS Streamer (Internal SMPL_Parser) ---")
+        print(f"--- Initializing AMASS Streamer (use neutral body shape = {use_neutral_shape})---")
         print(f"Motion File: {npz_path}")
         print(f"Device: {DEVICE}")
         
@@ -56,9 +57,14 @@ class AmassStreamer:
         trans = torch.tensor(data['trans'], dtype=torch.float32).to(DEVICE)
         
         # If the file has shape info (beta), use it
-        if 'betas' in data:
+        if self.use_neutral_shape:
+            #ignore beta, use mean shape to force the same limb length 
+            betas = torch.zeros((N, 10), dtype=torch.float32).to(DEVICE)
+            print("[Flag] Use neutral shape")
+        elif 'betas' in data:
             betas = torch.tensor(data['betas'][:10], dtype=torch.float32).unsqueeze(0).to(DEVICE)
             betas = betas.repeat(N, 1)
+            print("[Flag] Use provided shape")
         else:
             betas = torch.zeros((N, 10), dtype=torch.float32).to(DEVICE)
 
@@ -96,7 +102,7 @@ class AmassStreamer:
         # logic: Find the lowest Z-value (height) and shift the entire sequence so the lowest point is slightly above floor (0,0,0).
         if self.auto_ground:
             min_z = np.min(joints_np[..., 2]) # Index 2: Z axis
-            floor_buffer = 0.05               # temp buffer: 5cm buffer for shoe/foot. To be discussed
+            floor_buffer = 0.00              # unit in meter, temp buffer for shoe/foot. To be discussed
             offset = -min_z + floor_buffer
             joints_np[..., 2] += offset
             
