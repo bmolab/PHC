@@ -281,10 +281,10 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
             if pose_res.status_code == 200:
                 try:
                     json_data = pose_res.json()
-                    if self.progress_buf[0] % 30 == 0: 
-                        print(f"\n[DEBUG] Received Pose Data!")
-                        print(f"Keys: {list(json_data.keys())}")
-                        print(f"Joint Shape: {np.array(json_data['j3d']).shape}") # Should be (1, 24, 3) or similar
+                    # if self.progress_buf[0] % 30 == 0: 
+                    #     print(f"\n[DEBUG] Received Pose Data!")
+                    #     print(f"Keys: {list(json_data.keys())}")
+                    #     print(f"Joint Shape: {np.array(json_data['j3d']).shape}") # Should be (1, 24, 3) or similar
                 except ValueError:
                     print(f"[ERROR] Server response was not JSON: {pose_res.text}")
             else:
