@@ -1,3 +1,5 @@
+import sys,pathlib
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[2]))
 import os
 import time
 import asyncio
@@ -10,7 +12,9 @@ from poselib.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonState
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 import argparse
 
-
+'''
+!!Deprecated because the mismatch in converted XML skeleton calcualtion
+'''
 '''
 Streams 3D pose data from an AMASS .npz file in real time using forward kinematics on an SMPL skeleton. 
 Runs web server to provide live joint positions.
@@ -145,7 +149,7 @@ def stream_amass_realtime(npz_path: str):
     skel = ensure_skeleton_tree(xml_path)
 
     print(f"{'-'*3}Streaming {npz_path} ({N} frames @{target_fps}Hz)")
-    print(f"{'-'*4}Using skeleton XML: {xml_path}")
+    print(f"{'-'*5}Using skeleton XML: {xml_path}")
     interval = 1.0/target_fps
     
     fps = target_fps

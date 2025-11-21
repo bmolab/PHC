@@ -71,21 +71,22 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
         
         # To test: TorqueForceSender to send out torque force
         if cfg["env"].get("log_forces", False):
-            print(f'{'*'*3}"Starting TorqueForceSender streaming')
-            self.osc_sender = TorqueForceSender(
-                host="127.0.0.1",
-                port=9000,
-                fps=cfg["env"].get("fps", 30),
-                joint_names=self._dof_names,
-                sensor_names=getattr(self, "force_sensor_joints", []),
-            )
-            self.osc_sender.start(
-                get_torques=lambda: self.dof_force_tensor[0].detach().cpu().numpy(),
-                get_wrenches=(
-                    lambda: self.vec_sensor_tensor[0].detach().cpu().numpy()
-                    if self.self_obs_v == 3 else None
-                ),
-            )
+            print(f"{'*'*3}Starting TorqueForceSender streaming")
+            print(self.dof_force_tensor[0].detach().cpu().numpy())
+            # self.osc_sender = TorqueForceSender(
+            #     host="127.0.0.1",
+            #     port=9000,
+            #     fps=cfg["env"].get("fps", 30),
+            #     joint_names=self._dof_names,
+            #     sensor_names=getattr(self, "force_sensor_joints", []),
+            # )
+            # self.osc_sender.start(
+            #     get_torques=lambda: self.dof_force_tensor[0].detach().cpu().numpy(),
+            #     get_wrenches=(
+            #         lambda: self.vec_sensor_tensor[0].detach().cpu().numpy()
+            #         if self.self_obs_v == 3 else None
+            #     ),
+            # )
         
     async def talk(self):
         URL = f'http://{SERVER}:8080/ws'
@@ -130,7 +131,7 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
 
     def _update_marker(self):
         if flags.show_traj:
-            self._marker_pos[:] = self.ref_body_pos
+            self._marker_pos[:] = self.ref_body_pos #latest 3D joint position
         else:
             self._marker_pos[:] = 0
 
@@ -143,6 +144,8 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
         # self._marker_pos[:] = show_points[:, :self._marker_pos.shape[1]]
         # ######### Heading debug #######
 
+        
+        #send data to isaac gym
         self.gym.set_actor_root_state_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self._root_states), gymtorch.unwrap_tensor(self._marker_actor_ids), len(self._marker_actor_ids))
 
         return
@@ -273,6 +276,21 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
             self.prev_ref_body_rot = ref_rb_rot
         elif self.obs_v == 7:
             pose_res = requests.get(f'http://{SERVER}:8080/get_pose')
+            
+            #to test: received j3d 
+            if pose_res.status_code == 200:
+                try:
+                    json_data = pose_res.json()
+                    if self.progress_buf[0] % 30 == 0: 
+                        print(f"\n[DEBUG] Received Pose Data!")
+                        print(f"Keys: {list(json_data.keys())}")
+                        print(f"Joint Shape: {np.array(json_data['j3d']).shape}") # Should be (1, 24, 3) or similar
+                except ValueError:
+                    print(f"[ERROR] Server response was not JSON: {pose_res.text}")
+            else:
+                print(f"[ERROR] Connection failed with status: {pose_res.status_code}")
+
+                
             json_data = pose_res.json()
             ref_rb_pos = np.array(json_data["j3d"])[:self.num_envs, smpl_2_mujoco]
             trans = ref_rb_pos[:, [0]]
@@ -283,18 +301,20 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
             ref_rb_pos_orig = ref_rb_pos.copy()
 
             ref_rb_pos = ref_rb_pos - trans
-            ############################## Limb Length ##############################
-            limb_lengths = []
-            for i in range(6):
-                parent = self.skeleton_trees[0].parent_indices[i]
-                if parent != -1:
-                    limb_lengths.append(np.linalg.norm(ref_rb_pos[:, parent] - ref_rb_pos[:, i], axis = -1))
-            limb_lengths = np.array(limb_lengths).transpose(1, 0)
-            # print(limb_lengths)
-            # print(self.mean_limb_lengths)
-            scale = (limb_lengths/self.mean_limb_lengths).mean(axis = -1)
-            ref_rb_pos /= scale[:, None, None]
-            ############################## Limb Length ##############################
+            
+            #to test: amass different limb length 
+            # ############################## Limb Length ##############################
+            # limb_lengths = []
+            # for i in range(6):
+            #     parent = self.skeleton_trees[0].parent_indices[i]
+            #     if parent != -1:
+            #         limb_lengths.append(np.linalg.norm(ref_rb_pos[:, parent] - ref_rb_pos[:, i], axis = -1))
+            # limb_lengths = np.array(limb_lengths).transpose(1, 0)
+            # # print(limb_lengths)
+            # # print(self.mean_limb_lengths)
+            # scale = (limb_lengths/self.mean_limb_lengths).mean(axis = -1)
+            # ref_rb_pos /= scale[:, None, None]
+            # ############################## Limb Length ##############################
             s_dt = 1/30
             
             self.root_pos_acc.append(trans)
@@ -309,7 +329,10 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
             ref_rb_pos = filtered_ref_rb_pos[-1]
 
             ref_rb_pos = torch.from_numpy(ref_rb_pos + trans).float()
-            ref_rb_pos = ref_rb_pos.matmul(self.to_isaac_mat.T).cuda()
+            
+            # to test: disable rotation 
+            # ref_rb_pos = ref_rb_pos.matmul(self.to_isaac_mat.T).cuda()
+            ref_rb_pos = ref_rb_pos.cuda()
 
             ref_body_vel = SkeletonMotion._compute_velocity(torch.stack([self.prev_ref_body_pos, ref_rb_pos], dim=1), time_delta=s_dt, guassian_filter=False)[:, 0]  # 
 
