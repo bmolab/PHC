@@ -16,6 +16,17 @@ phc isaac gyn: z up
 Note: no rotation needed when sending data
 '''
 
+'''
+To Fix:
+Add to run command "control.decimation=4 sim.physx.step_dt=\"1/120.0\"" //for physics rate 
+
+Physics Rate sim_params.dt: the frequency at which the engine (Isaac Gym) updates the state 
+Control Rate:  the frequency at which the agent's policy runs to decide on a new action
+Control time step: the duration of one control cycle
+
+
+'''
+
 MAX_PEOPLE = 5 
 NUM_JOINTS = 24  # Standard SMPL joint count
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -116,7 +127,7 @@ class AmassStreamer:
         # logic: Find the lowest Z-value (height) and shift the entire sequence so the lowest point is slightly above floor (0,0,0).
         if self.auto_ground:
             min_z = np.min(joints_np[..., 2]) # Index 2: Z axis
-            floor_buffer = 0.05            # unit in meter, temp buffer for shoe/foot. To be discussed
+            floor_buffer = 0.00            # unit in meter, temp buffer for shoe/foot. To be discussed
             offset = -min_z + floor_buffer
             joints_np[..., 2] += offset
             

@@ -122,7 +122,7 @@ class Humanoid(BaseTask):
 
         super().__init__(cfg=self.cfg)
 
-        self.dt = self.control_freq_inv * sim_params.dt
+        self.dt = self.control_freq_inv * sim_params.dt #the duration of one control cycle
         self._setup_tensors()
         self.self_obs_buf = torch.zeros((self.num_envs, self.get_self_obs_size()), device=self.device, dtype=torch.float)
         self.reward_raw = torch.zeros((self.num_envs, 1)).to(self.device)
