@@ -27,11 +27,13 @@ from collections import deque
 import scipy.ndimage.filters as filters
 from smpl_sim.utils.transform_utils import quat_correct_two_batch
 import subprocess
+import threading
+import asyncio
 
 #to test
 from scripts.demo.TorqueForceSender import TorqueForceSender
 
-SERVER = "0.0.0.0"
+SERVER = "127.0.0.1"
 smpl_2_mujoco = [0, 1, 4, 7, 10, 2, 5, 8, 11, 3, 6, 9, 12, 15, 13, 16, 18, 20, 22, 14, 17, 19, 21, 23]
 
 
@@ -53,9 +55,6 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
         self.prev_ref_body_pos = torch.zeros(self.num_envs, 24, 3).to(self.device)
         self.prev_ref_body_rot = torch.zeros(self.num_envs, 24, 4).to(self.device)
 
-        self.zero_trans = torch.zeros([self.num_envs, 3])
-        self.s_dt = 1 / 30
-
         self.to_isaac_mat = torch.from_numpy(sRot.from_euler('xyz', np.array([-np.pi / 2, 0, 0]), degrees=False).as_matrix()).float()
         self.to_global = torch.from_numpy(sRot.from_quat([0.5, 0.5, 0.5, 0.5]).inv().as_matrix()).float()
 
@@ -67,6 +66,19 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
         flags.show_traj = True
         self.close_distance = 0.5
         self.mean_limb_lengths = np.array([0.1061, 0.3624, 0.4015, 0.1384, 0.1132], dtype=np.float32)[None, :]
+        
+        # To test: ---  Buffer for Async Data ---
+        self.j3d_buffer = torch.zeros([1, 24, 3]).to(self.device).float()
+        self.trans_buffer = np.zeros(3)
+        self.dt_buffer = 1/30.0 # Default dt, will be updated by streamer
+        self.first_frame_received = False
+
+        # Initialize this so the Red Marker exists immediately (T-pose at 0,0,0)
+        self.ref_body_pos = torch.zeros(self.num_envs, 24, 3).to(self.device)
+        self.ref_body_pos[:, :, 2] = 1.0 # Lift it 1m up so you can see it
+
+        print("Explicitly starting WebSocket thread...")
+        threading.Thread(target=self._start_websocket_thread, daemon=True).start()
         
         
         # To test: TorqueForceSender to send out torque force
@@ -88,46 +100,62 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
             #     ),
             # )
         
+    def _start_websocket_thread(self):
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(self.talk())
+        loop.run_forever()
+        
+    # --- To test Non-Blocking Async Talk ---
     async def talk(self):
         URL = f'http://{SERVER}:8080/ws'
-        print("Starting websocket client")
-        session = aiohttp.ClientSession()
-        async with session.ws_connect(URL) as ws:
-            async for msg in ws:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    if msg.data == 'close cmd':
-                        await ws.close()
+        print(f"Connecting to websocket server at: {URL} ...") 
+        
+        try:
+            session = aiohttp.ClientSession()
+            async with session.ws_connect(URL) as ws:
+                self.ws = ws
+                print("Connected! Requesting first pose...")
+                await ws.send_str("get_pose")
+                
+                async for msg in ws:
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        if msg.data == 'close cmd':
+                            await ws.close()
+                            break
+                        else:
+                            try:
+                                json_data = json.loads(msg.data)
+                                
+                                raw_j3d = np.array(json_data["j3d"]) 
+                                mapped_j3d = raw_j3d[:self.num_envs, smpl_2_mujoco]
+                                
+                                #Update Buffers
+                                self.j3d_buffer = mapped_j3d
+                                self.trans_buffer = np.array(json_data["j3d"])[0, 0] 
+                                
+                                self.dt_buffer = json_data.get("dt", 1/30.0)
+                                # Flag as received
+                                if not self.first_frame_received:
+                                    print("First frame received! Simulation starting.") 
+                                    self.first_frame_received = True
+
+                                #To test: SLEEP TO MATCH DATA FRAMERATE 
+                                await asyncio.sleep(self.dt_buffer) 
+                                
+                                await ws.send_str("get_pose")
+                                
+                            except Exception as e:
+                                print(f"Error processing message: {e}")
+
+                    elif msg.type == aiohttp.WSMsgType.CLOSED:
+                        print("Websocket connection closed.")
                         break
-                    else:
-                        # print(msg.data)
-                        try:
-                            msg = json.loads(msg.data)
-                            if msg['action'] == 'reset':
-                                self.reset()
-                            elif msg['action'] == 'start_record':
-                                subprocess.Popen(["simplescreenrecorder", "--start-recording"])
-                                print("start recording!!!!")
-                                # self.recording = True
-                            elif msg['action'] == 'end_record':
-                                print("end_recording!!!!")
-                                if not self.recording:
-                                    print("Not recording")
-                                else:
-                                    self.recording = False
-                                    self.recording_state_change = True
-                            elif msg['action'] == 'set_env':
-                                query = msg['query']
-                                env_id = query['env']
-                                self.viewing_env_idx = int(env_id)
-                                print("view env idx: ", self.viewing_env_idx)
-                        except:
-                            import ipdb
-                            ipdb.set_trace()
-                            print("error parsing server message")
-                elif msg.type == aiohttp.WSMsgType.CLOSED:
-                    break
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    break
+                    elif msg.type == aiohttp.WSMsgType.ERROR:
+                        print("Websocket error.")
+                        break
+        except Exception as e:
+            print(f"CRITICAL: Could not connect to {URL}. Is amassStreamer.py running? Error: {e}")
 
     def _update_marker(self):
         if flags.show_traj:
@@ -160,7 +188,11 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
 
         if (self._enable_task_obs):
             task_obs = self._compute_task_obs_demo(env_ids)
+            
+            # To test: Always concatenate, even for obs_v == 7
+            # 358 (Self) + 216 (Task) = 574 (Total)
             obs = torch.cat([self_obs, task_obs], dim=-1)
+
         else:
             obs = self_obs
 
@@ -201,138 +233,90 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
 
         if self.obs_v == 6:
             raise NotImplementedError
-            # This part is not as good. use obs_v == 7 instead.
-            # ref_rb_pos = self.j3d[((self.progress_buf[env_ids] + 1) / 2).long() % self.j3d.shape[0]]
-            # ref_body_vel = self.j3d_vel[((self.progress_buf[env_ids] + 1) / 2).long() % self.j3d_vel.shape[0]]
-            # pose_mat = self.pose_mat.clone()
-            # trans = self.trans.clone()
-
-            # pose_mat = self.rot_mat_ref[((self.progress_buf[env_ids] + 1) / 2).long() % self.rot_mat_ref.shape[0]] # debugging
-            pose_res = requests.get(f'http://{SERVER}:8080/get_pose')
-            json_data = pose_res.json()
-            pose_mat = torch.tensor(json_data["pose_mat"])[None,].float()
-            # trans = torch.tensor(json_data["trans"]).to(self.device).float()
-
-            trans = np.array(json_data["trans"]).squeeze()
-            s_dt = json_data['dt']
-            self.root_pos_acc.append(trans)
-            filtered_trans = filters.gaussian_filter1d(self.root_pos_acc, 3, axis=0, mode="mirror")
-            trans = torch.tensor(filtered_trans[-1]).float()
-
-            new_root = self.to_isaac_mat.matmul(pose_mat[:, 0])
-            pose_mat[:, 0] = new_root
-            trans = trans.matmul(self.to_isaac_mat.T)
-            _, global_rotation = humanoid_kin.forward_kinematics_batch(pose_mat[:, smpl_2_mujoco], self.zero_trans, self.local_translation_batch, self.parent_indices)
-
-            ref_rb_rot = ptr.matrix_to_quaternion_ijkr(global_rotation.matmul(self.to_global))
-
-            ##################  ##################
-            ref_rb_rot_np = ref_rb_rot.numpy()[0]
-
-            if len(self.body_rot_acc) > 0:
-                ref_rb_rot_np = quat_correct_two_batch(self.body_rot_acc[-1], ref_rb_rot_np)
-                filtered_quats = filters.gaussian_filter1d(np.concatenate([self.body_rot_acc, ref_rb_rot_np[None,]], axis=0), 1, axis=0, mode="mirror")
-                new_quat = filtered_quats[-1] / np.linalg.norm(filtered_quats[-1], axis=1)[:, None]
-                self.body_rot_acc.append(new_quat)  # add the filtered quat.
-
-                # pose_quat_global = np.array(self.body_rot_acc)
-                # select_quats = np.linalg.norm(pose_quat_global[:-1, :] - pose_quat_global[1:, :], axis=2) > np.linalg.norm(pose_quat_global[:-1, :] + pose_quat_global[1:, :], axis=2)
-                ref_rb_rot = torch.tensor(new_quat[None,]).float()
-            else:
-                self.body_rot_acc.append(ref_rb_rot_np)
-
-            ################## ##################
-
-            ref_rb_pos = SkeletonState.from_rotation_and_root_translation(self.skeleton_trees[0], ref_rb_rot, trans, is_local=False).global_translation.to(self.device)  # SLOWWWWWWW
-            ref_rb_rot = ref_rb_rot.to(self.device)
-            ref_rb_pos = ref_rb_pos.to(self.device)
-            ref_body_ang_vel = SkeletonMotion._compute_angular_velocity(torch.stack([self.prev_ref_body_rot, ref_rb_rot], dim=1), time_delta=s_dt, guassian_filter=False)[:, 0]
-            ref_body_vel = SkeletonMotion._compute_velocity(torch.stack([self.prev_ref_body_pos, ref_rb_pos], dim=1), time_delta=s_dt, guassian_filter=False)[:, 0]  # this is slow!
-
-
-            time_steps = 1
-            ref_rb_pos_subset = ref_rb_pos[..., self._track_bodies_id, :]
-            ref_body_vel_subset = ref_body_vel[..., self._track_bodies_id, :]
-            ref_rb_rot_subset = ref_rb_rot[..., self._track_bodies_id, :]
-            ref_body_ang_vel_subset = ref_body_ang_vel[..., self._track_bodies_id, :]
-
-            if self.zero_out_far:
-                close_distance = self.close_distance
-                distance = torch.norm(root_pos - ref_rb_pos_subset[..., 0, :], dim=-1)
-
-                zeros_subset = distance > close_distance
-                ref_rb_pos_subset[zeros_subset, 1:] = body_pos_subset[zeros_subset, 1:]
-                ref_rb_rot_subset[zeros_subset, 1:] = body_rot_subset[zeros_subset, 1:]
-                ref_body_vel_subset[zeros_subset, :] = body_vel_subset[zeros_subset, :]
-                ref_body_ang_vel_subset[zeros_subset, :] = body_ang_vel_subset[zeros_subset, :]
-
-                far_distance = 3  # does not seem to need this in particular...
-                vector_zero_subset = distance > far_distance  # > 5 meters, it become just a direction
-                ref_rb_pos_subset[vector_zero_subset, 0] = ((ref_rb_pos_subset[vector_zero_subset, 0] - body_pos_subset[vector_zero_subset, 0]) / distance[vector_zero_subset, None] * far_distance) + body_pos_subset[vector_zero_subset, 0]
-
-            obs = humanoid_im.compute_imitation_observations_v6(root_pos, root_rot, body_pos_subset, body_rot_subset, body_vel_subset, body_ang_vel_subset, ref_rb_pos_subset, ref_rb_rot_subset, ref_body_vel_subset, ref_body_ang_vel_subset, time_steps, self._has_upright_start)
-
-            self.prev_ref_body_pos = ref_rb_pos
-            self.prev_ref_body_rot = ref_rb_rot
+        
         elif self.obs_v == 7:
-            pose_res = requests.get(f'http://{SERVER}:8080/get_pose')
+             
+           
+            # pose_res = requests.get(f'http://{SERVER}:8080/get_pose')
             
-            #to test: received j3d 
-            if pose_res.status_code == 200:
-                try:
-                    json_data = pose_res.json()
-                    # if self.progress_buf[0] % 30 == 0: 
-                    #     print(f"\n[DEBUG] Received Pose Data!")
-                    #     print(f"Keys: {list(json_data.keys())}")
-                    #     print(f"Joint Shape: {np.array(json_data['j3d']).shape}") # Should be (1, 24, 3) or similar
-                except ValueError:
-                    print(f"[ERROR] Server response was not JSON: {pose_res.text}")
-            else:
-                print(f"[ERROR] Connection failed with status: {pose_res.status_code}")
+            # #to test: received j3d 
+            # if pose_res.status_code == 200:
+            #     try:
+            #         json_data = pose_res.json()
+            #         # if self.progress_buf[0] % 30 == 0: 
+            #         #     print(f"\n[DEBUG] Received Pose Data!")
+            #         #     print(f"Keys: {list(json_data.keys())}")
+            #         #     print(f"Joint Shape: {np.array(json_data['j3d']).shape}") # Should be (1, 24, 3) or similar
+            #     except ValueError:
+            #         print(f"[ERROR] Server response was not JSON: {pose_res.text}")
+            # else:
+            #     print(f"[ERROR] Connection failed with status: {pose_res.status_code}")
 
                 
-            json_data = pose_res.json()
-            ref_rb_pos = np.array(json_data["j3d"])[:self.num_envs, smpl_2_mujoco]
-            trans = ref_rb_pos[:, [0]]
+            # json_data = pose_res.json()
+            
+            if not self.first_frame_received:
+                 # Return current buffer if no data yet (prevents crash on startup)
+                 return self.obs_buf[env_ids]
 
-            # if len(self.root_pos_acc) > 0 and np.linalg.norm(trans - self.root_pos_acc[-1]) > 1:
-            # import ipdb; ipdb.set_trace()
-            # print("juping!!")
+            # Get data from Async Buffer
+            ref_rb_pos = self.j3d_buffer.copy() # Numpy array from talk()
+            
+            # Trans calculation 
+            #    Note: self.j3d_buffer is already mapped to Mujoco order in talk()
+            trans = ref_rb_pos[:, [0]] 
+
+            # 3. Continue with your existing logic...
             ref_rb_pos_orig = ref_rb_pos.copy()
-
             ref_rb_pos = ref_rb_pos - trans
             
-            #to test: amass different limb length 
-            # ############################## Limb Length ##############################
-            # limb_lengths = []
-            # for i in range(6):
-            #     parent = self.skeleton_trees[0].parent_indices[i]
-            #     if parent != -1:
-            #         limb_lengths.append(np.linalg.norm(ref_rb_pos[:, parent] - ref_rb_pos[:, i], axis = -1))
-            # limb_lengths = np.array(limb_lengths).transpose(1, 0)
-            # # print(limb_lengths)
-            # # print(self.mean_limb_lengths)
-            # scale = (limb_lengths/self.mean_limb_lengths).mean(axis = -1)
-            # ref_rb_pos /= scale[:, None, None]
-            # ############################## Limb Length ##############################
-            s_dt = 1/30
             
-            self.root_pos_acc.append(trans)
+            # # ref_rb_pos = np.array(json_data["j3d"])[:self.num_envs, smpl_2_mujoco]
+            # trans = ref_rb_pos[:, [0]]
+
+            # # if len(self.root_pos_acc) > 0 and np.linalg.norm(trans - self.root_pos_acc[-1]) > 1:
+            # # import ipdb; ipdb.set_trace()
+            # # print("juping!!")
+            # ref_rb_pos_orig = ref_rb_pos.copy()
+
+            # ref_rb_pos = ref_rb_pos - trans
+            
+            # to test: amass different limb length 
+            ############################## Limb Length ##############################
+            limb_lengths = []
+            for i in range(6):
+                parent = self.skeleton_trees[0].parent_indices[i]
+                if parent != -1:
+                    limb_lengths.append(np.linalg.norm(ref_rb_pos[:, parent] - ref_rb_pos[:, i], axis = -1))
+            limb_lengths = np.array(limb_lengths).transpose(1, 0)
+            # print(limb_lengths)
+            # print(self.mean_limb_lengths)
+            scale = (limb_lengths/self.mean_limb_lengths).mean(axis = -1)
+            ref_rb_pos /= scale[:, None, None]
+            ############################## Limb Length ##############################
+            # s_dt = 1/30
+
+            s_dt = 1/30
+            # self.root_pos_acc.append(trans)
+            self.root_pos_acc.append(trans[0])
             filtered_root_trans = np.array(self.root_pos_acc)
-            filtered_root_trans[..., 2] = filters.gaussian_filter1d(filtered_root_trans[..., 2], 10, axis=0, mode="mirror") # More filtering on the root translation
-            filtered_root_trans[..., :2] = filters.gaussian_filter1d(filtered_root_trans[..., :2], 5, axis=0, mode="mirror")
+            filtered_root_trans[..., 2] = filters.gaussian_filter1d(filtered_root_trans[..., 2], 2, axis=0, mode="mirror") # Reduced filtering
+            filtered_root_trans[..., :2] = filters.gaussian_filter1d(filtered_root_trans[..., :2], 2, axis=0, mode="mirror") # Reduced filtering
             trans = filtered_root_trans[-1]
 
             self.body_pos_acc.append(ref_rb_pos)
             body_pos = np.array(self.body_pos_acc)
-            filtered_ref_rb_pos = filters.gaussian_filter1d(body_pos, 2, axis=0, mode="mirror")
+            filtered_ref_rb_pos = filters.gaussian_filter1d(body_pos, 1, axis=0, mode="mirror") # Reduced filtering
+            # filtered_ref_rb_pos = filters.gaussian_filter1d(body_pos, 2, axis=0, mode="mirror")
             ref_rb_pos = filtered_ref_rb_pos[-1]
+        
 
             ref_rb_pos = torch.from_numpy(ref_rb_pos + trans).float()
             
             # to test: disable rotation 
             # ref_rb_pos = ref_rb_pos.matmul(self.to_isaac_mat.T).cuda()
             ref_rb_pos = ref_rb_pos.cuda()
+            
 
             ref_body_vel = SkeletonMotion._compute_velocity(torch.stack([self.prev_ref_body_pos, ref_rb_pos], dim=1), time_delta=s_dt, guassian_filter=False)[:, 0]  # 
 
@@ -352,13 +336,25 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
                 vector_zero_subset = distance > far_distance  # > 5 meters, it become just a direction
                 ref_rb_pos_subset[vector_zero_subset, 0] = ((ref_rb_pos_subset[vector_zero_subset, 0] - body_pos_subset[vector_zero_subset, 0]) / distance[vector_zero_subset, None] * far_distance) + body_pos_subset[vector_zero_subset, 0]
 
-            obs = humanoid_im.compute_imitation_observations_v7(root_pos, root_rot, body_pos_subset, body_vel_subset, ref_rb_pos_subset, ref_body_vel_subset, time_steps, self._has_upright_start)
-
+            # obs = humanoid_im.compute_imitation_observations_v7(root_pos, root_rot, body_pos_subset, body_vel_subset, ref_rb_pos_subset, ref_body_vel_subset, time_steps, self._has_upright_start)
+            obs = humanoid_im.compute_imitation_observations_v7(
+                root_pos, 
+                root_rot, 
+                body_pos_subset, 
+                body_vel_subset, 
+                ref_rb_pos_subset,   
+                ref_body_vel_subset, 
+                time_steps, 
+                self._has_upright_start
+            )
             self.prev_ref_body_pos = ref_rb_pos
 
         if len(env_ids) == self.num_envs:
-            self.ref_body_pos = ref_rb_pos
-            self.ref_body_pos_subset = torch.from_numpy(ref_rb_pos_orig)
+            # Update visual marker with the FULL body (for visualization)
+            self.ref_body_pos = ref_rb_pos 
+            
+            # Store the ORIG subset for any logic that needs the raw un-smoothed data
+            self.ref_body_pos_subset = torch.from_numpy(ref_rb_pos_orig) 
             self.ref_pose_aa = None
 
         return obs

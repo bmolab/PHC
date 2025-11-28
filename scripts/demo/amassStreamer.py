@@ -21,32 +21,46 @@ NUM_JOINTS = 24  # Standard SMPL joint count
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class AmassStreamer:
-    def __init__(self, npz_path, smpl_model_path, auto_ground=True, frame_rate=60, use_neutral_shape=True):
-        self.frame_rate = frame_rate
-        self.dt = 1.0 / frame_rate
+    def __init__(self, npz_path, smpl_model_path, auto_ground=True, use_neutral_shape=True):
         self.current_frame = 0
         self.auto_ground = auto_ground
         self.use_neutral_shape = use_neutral_shape
+        self.frame_rate = 60 # Default, will be overridden by file
+        self.dt = 1.0 / self.frame_rate
         
         print(f"--- Initializing AMASS Streamer (use neutral body shape = {use_neutral_shape})---")
         print(f"Motion File: {npz_path}")
         print(f"Device: {DEVICE}")
-        
+
         # Load motion sequence
         self.j3d_sequence = self.load_and_process_amass(npz_path, smpl_model_path)
         self.num_frames = self.j3d_sequence.shape[0]
         
         print(f"***Successfully loaded {self.num_frames} frames.")
-        print(f"Streaming started... (Press Ctrl+C to stop)")
+        print(f"Streaming started.. (Press Ctrl+C to stop)")
 
     # Reads the .npz file (joint angles) and converts it to 3D Positions (in XYZ)
     # using the SMPL body model (Forward Kinematics)
     def load_and_process_amass(self, path, model_path):
         
+        file_ext = os.path.splitext(path)[1]
+        if file_ext != '.npz':
+            raise ValueError(f"Unsupported motion file type: '{file_ext}'. This streamer only supports .npz files.")
+
         try:
             data = np.load(path)
         except FileNotFoundError:
             raise FileNotFoundError(f"Could not find AMASS file at: {path}")
+
+        # Check for mocap framerate and update streamer's rate
+        if 'mocap_framerate' in data:
+            self.frame_rate = data['mocap_framerate']
+            print(f"----mocap_framerate={self.frame_rate }")
+        else:
+            raise ValueError(f"'mocap_framerate' not found in the AMASS file: {path}")
+
+        self.dt = 1.0 / self.frame_rate
+
 
         # total number of frames
         N = data['poses'].shape[0]
@@ -102,7 +116,7 @@ class AmassStreamer:
         # logic: Find the lowest Z-value (height) and shift the entire sequence so the lowest point is slightly above floor (0,0,0).
         if self.auto_ground:
             min_z = np.min(joints_np[..., 2]) # Index 2: Z axis
-            floor_buffer = 0.00              # unit in meter, temp buffer for shoe/foot. To be discussed
+            floor_buffer = 0.05            # unit in meter, temp buffer for shoe/foot. To be discussed
             offset = -min_z + floor_buffer
             joints_np[..., 2] += offset
             
@@ -119,6 +133,9 @@ class AmassStreamer:
         # hard reset: increment frame, reset to 0 if we hit the end
         self.current_frame = (self.current_frame + 1) % self.num_frames
         
+        if self.current_frame == 0:
+            print(f"--Looped, start over, total frame = {self.num_frames}")
+        
         # (people, 24 joints, 3 coordinate)
         output_j3d = np.zeros((MAX_PEOPLE, NUM_JOINTS, 3))
         output_j3d[0] = joints_data
@@ -134,9 +151,11 @@ async def pose_getter(request):
     '''
     j3d = streamer.get_current_joints()
     
+    print(f"-----streamer.dt={streamer.dt}")
+    
     response_data = {
         "j3d": j3d.tolist(), 
-        "dt": streamer.dt,
+        "dt": streamer.dt, #calcualted by streamer side, not from the amass file
         "j3d_curr": j3d.tolist(),
         "j3d_curr_vel": np.zeros_like(j3d).tolist() 
     }
@@ -148,9 +167,28 @@ async def websocket_handler(request):
     '''
     ws = web.WebSocketResponse()
     await ws.prepare(request)
+    
     # keep connection open until client disconnects
     async for msg in ws:
-        pass 
+        if msg.type == web.WSMsgType.TEXT:
+            if msg.data == "get_pose":
+                j3d = streamer.get_current_joints()
+                
+                response_data = {
+                    "j3d": j3d.tolist(), 
+                    "dt": streamer.dt,
+                }
+
+                await ws.send_json(response_data)
+                
+            elif msg.data == 'close cmd':
+                await ws.close()
+                break
+                
+        elif msg.type == web.WSMsgType.ERROR:
+            print('ws connection closed with exception %s', ws.exception())
+
+    print('websocket connection closed')
     return ws
 
 
@@ -163,7 +201,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Initialize Streamer
-    streamer = AmassStreamer(args.file, args.smpl)
+    streamer = AmassStreamer(npz_path=args.file, smpl_model_path=args.smpl)
 
     # Initialize Web Server
     app = web.Application()
