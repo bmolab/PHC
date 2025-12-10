@@ -141,9 +141,11 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
                                     self.first_frame_received = True
 
                                 # #To test: SLEEP TO MATCH DATA FRAMERATE 
-                                await asyncio.sleep(self.dt_buffer) 
+                                # await asyncio.sleep(self.dt_buffer) 
                                 
                                 await ws.send_str("get_pose")
+                                
+                                # print('get_pose')
                                 
                             except Exception as e:
                                 print(f"Error processing message: {e}")

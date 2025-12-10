@@ -40,6 +40,7 @@ class AmassStreamer:
         self.use_neutral_shape = use_neutral_shape
         self.target_fps = target_fps
         self.dt = 1.0 / self.target_fps 
+        self.loop_print_count = -1
         
         print(f"--- Initializing AMASS Streamer---")
         print(f"Motion File: {npz_path}")
@@ -117,12 +118,18 @@ class AmassStreamer:
         # make sure the humanoid is on 0 ground! 
         # logic: Find the lowest Z-value (height) and shift the entire sequence so the lowest point is slightly above floor (0,0,0).
         if self.auto_ground:
-            min_z = np.min(joints_np[..., 2]) # Index 2: Z axis
-            floor_buffer = 0.00            # unit in meter, temp buffer for shoe/foot. To be discussed
+            min_z = np.min(joints_np[..., 2]) # Index 2: Z axis, based on joib
+            floor_buffer = 0.05           # unit in meter, temp buffer for shoe/foot thickness
             offset = -min_z + floor_buffer
             joints_np[..., 2] += offset
-            print(f"[Auto-Ground] Lowest point detected: {min_z:.4f}m, applying Z-offset: {offset:.4f}m")
+            print(f"[Auto-Ground] Lowest point detected: {min_z:.4f}m, applying floor_buff: {floor_buffer}, Z-offset: {offset:.4f}m")
             
+            # #To test center start:
+            # start_x = joints_np[0,0,0] #X
+            # start_y = joints_np[0,0,1] #Y
+            # joints_np[...,0] -= start_x 
+            # joints_np[...,0] -= start_y 
+            # print("Test: Change x and y based on start pose" )
         return joints_np, source_fps
 
     def get_current_joints(self):
@@ -134,13 +141,17 @@ class AmassStreamer:
         
         # Calculate index: (Time * FPS) % Total_Frames
         # This automatically handles frame skip (e.g. if time jumps 0.1s =  skip 6 frames at 60fps)
+        temp_loop_count = int(int(elapsed_time * self.source_fps) / self.num_total_frames)
         current_idx = int(elapsed_time * self.source_fps) % self.num_total_frames
         
         # Get data
         joints_data = self.j3d_sequence[current_idx]
 
-        if current_idx == 0 and elapsed_time > 1.0:
-            print(f"--Looped, start over, current_idx={current_idx}")
+        if current_idx == 0 and elapsed_time > 1.0 and temp_loop_count>self.loop_print_count:
+            print(f"--Looped, start over, elapsed_time={elapsed_time}")
+            self.loop_print_count = temp_loop_count
+            
+            pass
 
         # (people, 24 joints, 3 coordinate)
         output_j3d = np.zeros((MAX_PEOPLE, NUM_JOINTS, 3))
@@ -196,14 +207,15 @@ if __name__ == "__main__":
     parser.add_argument("--file", type=str, required=True, help="Path to the AMASS .npz file")
     parser.add_argument("--smpl", type=str, default="data/smpl/", help="Path to folder containing SMPL_NEUTRAL.pkl")
     parser.add_argument("--port", type=int, default=8080)
-    parser.add_argument("--target_fps", type=int, default=30, help="Target FPS for the client (default: 30)")
+    parser.add_argument("--target_fps", type=int, default=60, help="Target FPS for the client (default: 30)")
     
     args = parser.parse_args()
 
     streamer = AmassStreamer(
         npz_path=args.file, 
         smpl_model_path=args.smpl, 
-        target_fps=args.target_fps
+        target_fps=args.target_fps,
+        auto_ground=True
     )
 
     app = web.Application()
