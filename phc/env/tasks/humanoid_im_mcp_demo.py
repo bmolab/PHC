@@ -137,10 +137,10 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
                                 self.dt_buffer = json_data.get("dt", 1/30.0)
                                 # Flag as received
                                 if not self.first_frame_received:
-                                    print("First frame received! Simulation starting.") 
+                                    print("================First frame received! Simulation starting.") 
                                     self.first_frame_received = True
 
-                                #To test: SLEEP TO MATCH DATA FRAMERATE 
+                                # #To test: SLEEP TO MATCH DATA FRAMERATE 
                                 await asyncio.sleep(self.dt_buffer) 
                                 
                                 await ws.send_str("get_pose")
@@ -256,8 +256,10 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
             # json_data = pose_res.json()
             
             if not self.first_frame_received:
-                 # Return current buffer if no data yet (prevents crash on startup)
-                 return self.obs_buf[env_ids]
+                # Return a zero tensor of the correct shape for task_obs
+                # until the first frame is received from the streamer.
+                task_obs_size = self.get_task_obs_size()
+                return torch.zeros(len(env_ids), task_obs_size, device=self.device, dtype=torch.float)
 
             # Get data from Async Buffer
             ref_rb_pos = self.j3d_buffer.copy() # Numpy array from talk()
@@ -296,7 +298,7 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
             ############################## Limb Length ##############################
             # s_dt = 1/30
 
-            s_dt = 1/30
+            s_dt = self.dt_buffer
             # self.root_pos_acc.append(trans)
             self.root_pos_acc.append(trans[0])
             filtered_root_trans = np.array(self.root_pos_acc)

@@ -122,6 +122,10 @@ class Humanoid(BaseTask):
 
         super().__init__(cfg=self.cfg)
 
+
+        #sim_params.dt : the simulaiton dt
+        #control_freq_inv: how many physic steps happen per control step 
+        #self.dt: the policy use this one 
         self.dt = self.control_freq_inv * sim_params.dt #the duration of one control cycle
         self._setup_tensors()
         self.self_obs_buf = torch.zeros((self.num_envs, self.get_self_obs_size()), device=self.device, dtype=torch.float)
