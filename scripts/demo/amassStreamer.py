@@ -50,7 +50,6 @@ class AmassStreamer:
         self.j3d_sequence, self.source_fps = self.load_and_process_amass(npz_path, smpl_model_path)
         self.num_total_frames = self.j3d_sequence.shape[0]
 
-        # To Test: SYNC 
         self.start_time = time.time()
         
         print(f"*** Successfully Loaded {self.num_total_frames} frames at Source FPS: {self.source_fps}")
@@ -111,64 +110,74 @@ class AmassStreamer:
 
             joints = torch.cat(joints_list, dim=0)
 
-        # -------- Format Data ------
         # select standard 24 joints
         joints_np = joints.numpy()[:, :24, :] 
 
-        # make sure the humanoid is on 0 ground! 
-        # logic: Find the lowest Z-value (height) and shift the entire sequence so the lowest point is slightly above floor (0,0,0).
+        # To test: harcode the Hip root position ( the offset_height param for webcam version)
         if self.auto_ground:
-            min_z = np.min(joints_np[..., 2]) # Index 2: Z axis, based on joib
-            floor_buffer = 0.05           # unit in meter, temp buffer for shoe/foot thickness
-            offset = -min_z + floor_buffer
+
+            start_root_z = joints_np[0, 0, 2] 
+            target_hip_height = 0.92 
+
+            offset = target_hip_height - start_root_z
             joints_np[..., 2] += offset
-            print(f"[Auto-Ground] Lowest point detected: {min_z:.4f}m, applying floor_buff: {floor_buffer}, Z-offset: {offset:.4f}m")
             
-            # #To test center start:
-            # start_x = joints_np[0,0,0] #X
-            # start_y = joints_np[0,0,1] #Y
-            # joints_np[...,0] -= start_x 
-            # joints_np[...,0] -= start_y 
-            # print("Test: Change x and y based on start pose" )
+            print(f"---- Force Hips to {target_hip_height}m (offset: {offset:.4f}m)")
+            
         return joints_np, source_fps
 
+    
     def get_current_joints(self):
-       
-        # To Test: WALL CLOCK TIME SYNC
-        # calculates which frame should play right now based on elapsed time
         
+        # calculates which frame should play right now based on elapsed time
         elapsed_time = time.time() - self.start_time
         
-        # Calculate index: (Time * FPS) % Total_Frames
-        # This automatically handles frame skip (e.g. if time jumps 0.1s =  skip 6 frames at 60fps)
-        temp_loop_count = int(int(elapsed_time * self.source_fps) / self.num_total_frames)
-        current_idx = int(elapsed_time * self.source_fps) % self.num_total_frames
+        # use num_frames - 1 because need idx+1 for interpolation
+        cycle_len = self.num_total_frames - 1 
+        total_frames_played = elapsed_time * self.source_fps
         
-        # Get data
-        joints_data = self.j3d_sequence[current_idx]
+        frame_idx_float = total_frames_played % cycle_len
+        
+        current_loop_count = int(total_frames_played / cycle_len)
 
-        if current_idx == 0 and elapsed_time > 1.0 and temp_loop_count>self.loop_print_count:
-            print(f"--Looped, start over, elapsed_time={elapsed_time}")
-            self.loop_print_count = temp_loop_count
-            
-            pass
+        if current_loop_count > self.loop_print_count:
+            print(f"--Looped, start over (Loop {current_loop_count})")
+            self.loop_print_count = current_loop_count
+        
+        # For Interpolation
+        # Identify the two frames we are between
+        idx_0 = int(frame_idx_float)
+        idx_1 = idx_0 + 1
+        alpha = frame_idx_float - idx_0 # Interpolation factor
 
-        # (people, 24 joints, 3 coordinate)
+        pose_0 = self.j3d_sequence[idx_0]
+        pose_1 = self.j3d_sequence[idx_1]
+
+        # inter. position
+        pose_interpolated = pose_0 * (1 - alpha) + pose_1 * alpha
+
+        # calc velocity
+        real_dt = 1.0 / self.source_fps
+        velocity = (pose_1 - pose_0) / real_dt
+
         output_j3d = np.zeros((MAX_PEOPLE, NUM_JOINTS, 3))
-        output_j3d[0] = joints_data
+        output_vel = np.zeros((MAX_PEOPLE, NUM_JOINTS, 3))
         
-        return output_j3d
+        output_j3d[0] = pose_interpolated
+        output_vel[0] = velocity 
+        
+        return output_j3d, output_vel
 
 # called by HumanoidImMCPDemo.py every simulation step.
 streamer = None
 async def pose_getter(request):
-    j3d = streamer.get_current_joints()
-    print(f"-----streamer.dt={streamer.dt}")
+    j3d, j3d_vel = streamer.get_current_joints()
+    # print(f"-----streamer.dt={streamer.dt}") 
     response_data = {
         "j3d": j3d.tolist(), 
         "dt": streamer.dt,
         "j3d_curr": j3d.tolist(),
-        "j3d_curr_vel": np.zeros_like(j3d).tolist() 
+        # "j3d_curr_vel": j3d_vel.tolist() 
     }
     return web.json_response(response_data)
 
@@ -182,12 +191,12 @@ async def websocket_handler(request):
     async for msg in ws:
         if msg.type == web.WSMsgType.TEXT:
             if msg.data == "get_pose":
-                # Returns the frame corresponding to Wall Clock
-                j3d = streamer.get_current_joints()
+                j3d, j3d_vel = streamer.get_current_joints()
                 
                 response_data = {
                     "j3d": j3d.tolist(), 
                     "dt": streamer.dt,
+                    # "j3d_vel": j3d_vel.tolist() 
                 }
 
                 await ws.send_json(response_data)
@@ -201,6 +210,7 @@ async def websocket_handler(request):
 
     print('websocket connection closed')
     return ws
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Stream AMASS motion data to PHC Demo")
