@@ -51,7 +51,12 @@ class AmassStreamer:
 
         self.start_time = time.time()
         self.last_accessed_motion_time = 0.0
+        self.last_loop_time = time.time()
         
+        
+        if self.scale != 1.0:
+            self.j3d_sequence *= self.scale
+                    
         print(f"*** Successfully Loaded {self.num_total_frames} frames at Source FPS: {self.source_fps}")
         print(f"*** Runs on wall-clock time (does not wait for client).")
         print(f"Streaming ready.. (Press Ctrl+C to stop)")
@@ -137,11 +142,54 @@ class AmassStreamer:
             
         return joints_np, source_fps
 
+    def get_current_joints_2(self):
+        
+        frame_interval = self.dt
+        now = time.time()
+        elapsed_since_last_loop = now - self.last_loop_time
+        if elapsed_since_last_loop < frame_interval:
+            time.sleep(frame_interval - elapsed_since_last_loop)
+        
+        self.last_loop_time = time.time() # Update after sleep
+
+        # Calculate Motion Time & DT
+        now = time.time()
+        elapsed_total = now - self.start_time
+        motion_time_cursor = elapsed_total % self.duration
+        
+        if motion_time_cursor < self.last_accessed_motion_time:
+            dt = motion_time_cursor + (self.duration - self.last_accessed_motion_time)
+            print("-------Looped, start over")
+        else:
+            dt = motion_time_cursor - self.last_accessed_motion_time
+            
+        self.last_accessed_motion_time = motion_time_cursor
+        
+        # Interpolate Frame
+        frame_idx_float = motion_time_cursor * self.source_fps
+        idx_0 = int(frame_idx_float)
+        idx_1 = min(idx_0 + 1, self.num_total_frames - 1)
+        alpha = frame_idx_float - idx_0
+        
+        if idx_0 >= self.num_total_frames - 1:
+            idx_0 = idx_1 = self.num_total_frames - 1
+            alpha = 0.0
+
+        pose = self.j3d_sequence[idx_0] * (1 - alpha) + self.j3d_sequence[idx_1] * alpha
+        
+        output_j3d = np.zeros((MAX_PEOPLE, NUM_JOINTS, 3))
+        output_j3d[0] = pose
+        
+        # Safety clamp for dt to prevent division by zero in client
+        if dt < 1e-4: dt = 1e-4
+
+        return output_j3d, dt
     
     def get_current_joints(self):
         
         # calculates which frame should play right now based on elapsed time
         elapsed_time = time.time() - self.start_time
+        
         
         #To test: sync:
         motion_time_cursor = elapsed_time % self.duration
@@ -191,7 +239,7 @@ class AmassStreamer:
 # called by HumanoidImMCPDemo.py every simulation step.
 streamer = None
 async def pose_getter(request):
-    j3d, dt = streamer.get_current_joints()
+    j3d, dt = streamer.get_current_joints_2()
     # print(f"-----streamer.dt={streamer.dt}") 
     response_data = {
         "j3d": j3d.tolist(), 
@@ -211,7 +259,7 @@ async def websocket_handler(request):
     async for msg in ws:
         if msg.type == web.WSMsgType.TEXT:
             if msg.data == "get_pose":
-                j3d, real_dt = streamer.get_current_joints()
+                j3d, real_dt = streamer.get_current_joints_2()
                 
                 response_data = {
                     "j3d": j3d.tolist(), 
@@ -238,6 +286,7 @@ if __name__ == "__main__":
     parser.add_argument("--smpl", type=str, default="data/smpl/", help="Path to folder containing SMPL_NEUTRAL.pkl")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--target_fps", type=int, default=60, help="Target FPS for the client (default: 30)")
+    parser.add_argument("--scale", type=float, default=1.0, help="Scale factor (e.g. 0.85)")
     
     args = parser.parse_args()
 
@@ -245,7 +294,8 @@ if __name__ == "__main__":
         npz_path=args.file, 
         smpl_model_path=args.smpl, 
         target_fps=args.target_fps,
-        auto_ground=True
+        auto_ground=True,
+        scale=args.scale
     )
 
     app = web.Application()
