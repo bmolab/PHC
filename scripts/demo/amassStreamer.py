@@ -31,8 +31,6 @@ MAX_PEOPLE = 5
 NUM_JOINTS = 24  # Standard SMPL joint count
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# Map SMPL joint order to Mujoco order if needed
-SMPL_2_MUJOCO = [0, 1, 4, 7, 10, 2, 5, 8, 11, 3, 6, 9, 12, 15, 13, 16, 18, 20, 22, 14, 17, 19, 21, 23]
 
 class AmassStreamer:
     def __init__(self, npz_path, smpl_model_path, target_fps=30, auto_ground=True, use_neutral_shape=True):
@@ -49,8 +47,10 @@ class AmassStreamer:
         # Load motion sequence
         self.j3d_sequence, self.source_fps = self.load_and_process_amass(npz_path, smpl_model_path)
         self.num_total_frames = self.j3d_sequence.shape[0]
+        self.duration = self.num_total_frames / self.source_fps
 
         self.start_time = time.time()
+        self.last_accessed_motion_time = 0.0
         
         print(f"*** Successfully Loaded {self.num_total_frames} frames at Source FPS: {self.source_fps}")
         print(f"*** Runs on wall-clock time (does not wait for client).")
@@ -73,8 +73,10 @@ class AmassStreamer:
         if 'mocap_framerate' in data:
             source_fps = int(data['mocap_framerate'])
             print(f"----mocap_framerate in file: {source_fps}")
+        
         # total number of frames
         N = data['poses'].shape[0]
+        
         # first 72 parameters: 24 joints * 3 axis angles
         # Note: SMPL_Parser expects the full pose tensor (72), not split
         poses = torch.tensor(data['poses'][:, :72], dtype=torch.float32).to(DEVICE)
@@ -115,14 +117,23 @@ class AmassStreamer:
 
         # To test: harcode the Hip root position ( the offset_height param for webcam version)
         if self.auto_ground:
-
-            start_root_z = joints_np[0, 0, 2] 
-            target_hip_height = 0.92 
-
-            offset = target_hip_height - start_root_z
-            joints_np[..., 2] += offset
             
-            print(f"---- Force Hips to {target_hip_height}m (offset: {offset:.4f}m)")
+            # #case 1 webcam: use 0.92m offset
+            # start_root_z = joints_np[0, 0, 2] 
+            # target_hip_height = 0.92 
+
+            # offset = target_hip_height - start_root_z
+            # joints_np[..., 2] += offset
+            
+            # print(f"---- Force Hips to {target_hip_height}m (offset: {offset:.4f}m)")
+            
+            #case 2: use min of all joints
+            min_z = np.min(joints_np[..., 2])
+            ground_margin = 0.03
+            offset_z = -min_z + ground_margin
+            
+            print(f"[Offset] Min Z found: {min_z:.4f}. Add offset: {offset_z:.4f} (with ground_margin={ground_margin}m).")
+            joints_np[..., 2] += offset_z
             
         return joints_np, source_fps
 
@@ -132,50 +143,59 @@ class AmassStreamer:
         # calculates which frame should play right now based on elapsed time
         elapsed_time = time.time() - self.start_time
         
-        # use num_frames - 1 because need idx+1 for interpolation
-        cycle_len = self.num_total_frames - 1 
-        total_frames_played = elapsed_time * self.source_fps
+        #To test: sync:
+        motion_time_cursor = elapsed_time % self.duration
         
-        frame_idx_float = total_frames_played % cycle_len
-        
-        current_loop_count = int(total_frames_played / cycle_len)
-
-        if current_loop_count > self.loop_print_count:
-            print(f"--Looped, start over (Loop {current_loop_count})")
-            self.loop_print_count = current_loop_count
+        # calculate DT relative to the motion itself
+        # Velocity = dx / dt
+        if motion_time_cursor < self.last_accessed_motion_time:
+            dt = motion_time_cursor + (self.duration - self.last_accessed_motion_time)
+            print("-------Looped, start over")
+        else:
+            dt = motion_time_cursor - self.last_accessed_motion_time
+            
+        # Update cursor
+        self.last_accessed_motion_time = motion_time_cursor
         
         # For Interpolation
         # Identify the two frames we are between
+        frame_idx_float = motion_time_cursor * self.source_fps
         idx_0 = int(frame_idx_float)
-        idx_1 = idx_0 + 1
+        idx_1 = min(idx_0 + 1, self.num_total_frames - 1)
         alpha = frame_idx_float - idx_0 # Interpolation factor
 
+        # end of sequence handle: 
+        if idx_0 >= self.num_total_frames - 1:
+            idx_0 = self.num_total_frames - 1
+            idx_1 = self.num_total_frames - 1
+            alpha = 0.0
+            
         pose_0 = self.j3d_sequence[idx_0]
         pose_1 = self.j3d_sequence[idx_1]
 
         # inter. position
         pose_interpolated = pose_0 * (1 - alpha) + pose_1 * alpha
 
-        # calc velocity
-        real_dt = 1.0 / self.source_fps
-        velocity = (pose_1 - pose_0) / real_dt
+        # # calc velocity
+        # real_dt = 1.0 / self.source_fps
+        # velocity = (pose_1 - pose_0) / real_dt
 
         output_j3d = np.zeros((MAX_PEOPLE, NUM_JOINTS, 3))
-        output_vel = np.zeros((MAX_PEOPLE, NUM_JOINTS, 3))
+        # output_vel = np.zeros((MAX_PEOPLE, NUM_JOINTS, 3))
         
         output_j3d[0] = pose_interpolated
-        output_vel[0] = velocity 
+        # output_vel[0] = velocity 
         
-        return output_j3d, output_vel
+        return output_j3d, dt
 
 # called by HumanoidImMCPDemo.py every simulation step.
 streamer = None
 async def pose_getter(request):
-    j3d, j3d_vel = streamer.get_current_joints()
+    j3d, dt = streamer.get_current_joints()
     # print(f"-----streamer.dt={streamer.dt}") 
     response_data = {
         "j3d": j3d.tolist(), 
-        "dt": streamer.dt,
+        "dt": dt,
         "j3d_curr": j3d.tolist(),
         # "j3d_curr_vel": j3d_vel.tolist() 
     }
@@ -191,11 +211,11 @@ async def websocket_handler(request):
     async for msg in ws:
         if msg.type == web.WSMsgType.TEXT:
             if msg.data == "get_pose":
-                j3d, j3d_vel = streamer.get_current_joints()
+                j3d, real_dt = streamer.get_current_joints()
                 
                 response_data = {
                     "j3d": j3d.tolist(), 
-                    "dt": streamer.dt,
+                    "dt": real_dt,
                     # "j3d_vel": j3d_vel.tolist() 
                 }
 
