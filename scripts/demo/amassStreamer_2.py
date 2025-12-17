@@ -102,15 +102,15 @@ class AmassStreamer:
         if self.scale != 1.0:
             joints_np *= self.scale
 
-        # 3. ROBUST GROUNDING (Percentile)
-        # Instead of np.min (which fails on outliers), we use the 0.1th percentile.
-        # This finds the "True Floor" even if there are data glitches.
-        floor_height = np.percentile(joints_np[..., 2], 0.1)
+
+        #to test: negative margin fix the the "hovering feet" issue 
+        floor_height = np.percentile(joints_np[..., 2], 1.0)
+
+        ground_margin = -0.02 
         
-        ground_margin = 0.02 # Safety margin
         offset_z = -floor_height + ground_margin 
         
-        print(f"Robust Grounding: Found floor at {floor_height:.4f}m. Offset: {offset_z:.4f}m")
+        print(f"floor_heightat {floor_height:.4f}m. ground_margin by {ground_margin}cm. Total Offset: {offset_z:.4f}m")
         joints_np[..., 2] += offset_z
 
         return joints_np, source_fps
