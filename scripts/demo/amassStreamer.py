@@ -33,12 +33,13 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
 class AmassStreamer:
-    def __init__(self, npz_path, smpl_model_path, target_fps=30, auto_ground=True, use_neutral_shape=True):
+    def __init__(self, npz_path, smpl_model_path, scale, target_fps=30, auto_ground=True, use_neutral_shape=True,):
         self.auto_ground = auto_ground
         self.use_neutral_shape = use_neutral_shape
         self.target_fps = target_fps
         self.dt = 1.0 / self.target_fps 
         self.loop_print_count = -1
+        self.scale = scale
         
         print(f"--- Initializing AMASS Streamer---")
         print(f"Motion File: {npz_path}")
