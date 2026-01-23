@@ -28,3 +28,34 @@ The key config parameter which leads to where to get the torque and force data a
 - config file: env=env_im_getup_mcp_test
 - task type: env.task=HumanoidImMCPDemo 
 - env.obs_v=7 
+
+# Getting Torque & Force Data in PHC
+The model checkpoint `output/HumanoidIm/phc_kp_mcp_iccv/Humanoid.pth` was trained with an observation shape of 574. Change `self_obs_v = 3` changes the observation size, causing a size mismatch crash. 
+
+⚠️ So do not change `self_obs_v`. Instead, we added the `log_forces` flag, set it to True to trigger the force/torque streaming process.
+
+## How the Data is Retrieved
+[Isaac Gym Force Sensors Documentation](https://docs.robotsfan.com/isaacgym/programming/forcesensors.html)
+
+
+### Internal Motor Efforts (`dof_force_tensor`)
+* **PHC already have this implemented for every step** 
+* **Source:** `gym.acquire_dof_force_tensor(sim)`
+* **What it is:** The internal force/torque the robot's motors apply to move its own joints (Muscle/Actuation effort).
+* **Units:** Newton-meters ($N \cdot m$) for rotational joints
+
+
+### External Contact Forces (`vec_sensor_tensor`)
+* **Source:** `gym.acquire_force_sensor_tensor(sim)`
+* **What it is:** The external reaction forces exerted by the ground onto the robot's feet (Ground Reaction Force).
+* **Units:** 6-DOF Wrench (3 Forces + 3 Torques)
+
+
+### Implementation Note
+we modified `phc/env/tasks/humanoid.py` and `phc/env/tasks/humanoid_im_mcp_demo.py`
+
+To enable the changes, add `log_forces: True` to the environment configuration file used in your run command.
+
+* **Example:** If your command uses `env=env_im_getup_mcp`, edit the file `phc/data/cfg/env/env_im_getup_mcp.yaml`
+
+

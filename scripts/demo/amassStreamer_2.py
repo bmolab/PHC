@@ -21,30 +21,28 @@ DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 class AmassStreamer:
     def __init__(self, npz_path, smpl_model_path, target_fps=30, scale=1.0, rotate_z=-90.0, use_neutral_shape=True):
         self.target_fps = target_fps
-        # CONSTANT DT: Crucial for stable jumping momentum
         self.dt = 1.0 / self.target_fps 
         self.scale = scale
         self.rotate_z = rotate_z
         self.use_neutral_shape = use_neutral_shape
         
-        # High Precision Timing State
         self.last_loop_time = time.perf_counter()
         self.frame_cursor = 0.0 
 
-        print(f"--- Initializing AMASS Streamer (Robust Version) ---")
+        print(f"--- Initializing AMASS Streamer---")
         print(f"File: {npz_path}")
-        print(f"FPS: {self.target_fps} | Constant DT: {self.dt:.4f}s")
+        print(f"FPS: {self.target_fps} | dt: {self.dt:.4f}s")
         print(f"Scale: {self.scale} | Rot: {self.rotate_z}")
 
-        # Load and Process
+        # Load movement
         self.j3d_sequence, self.source_fps = self.load_and_process_amass(npz_path, smpl_model_path)
         self.num_total_frames = self.j3d_sequence.shape[0]
         
         # Frame Step Calculation
         self.frame_step = self.source_fps / self.target_fps
         
-        print(f"*** Speed: Advancing {self.frame_step:.2f} frames per tick")
-        print(f"*** Ready. Streaming...")
+        print(f"*** Frame Step: {self.frame_step:.2f}")
+        print(f"*** Streaming...")
 
     def load_and_process_amass(self, path, model_path):
         if not os.path.exists(path):
@@ -90,7 +88,7 @@ class AmassStreamer:
 
         joints_np = joints.numpy()[:, :24, :]
 
-        # 1. Rotation (-90 Fixed)
+        # Rotation 
         if self.rotate_z != 0:
             rot_mat = sRot.from_euler('z', self.rotate_z, degrees=True).as_matrix()
             shape = joints_np.shape
@@ -98,7 +96,7 @@ class AmassStreamer:
             flat_joints = np.dot(flat_joints, rot_mat.T)
             joints_np = flat_joints.reshape(shape)
 
-        # 2. Scaling (1.0 Default)
+        # Scaling 
         if self.scale != 1.0:
             joints_np *= self.scale
 
@@ -110,20 +108,17 @@ class AmassStreamer:
         
         offset_z = -floor_height + ground_margin 
         
-        print(f"floor_heightat {floor_height:.4f}m. ground_margin by {ground_margin}cm. Total Offset: {offset_z:.4f}m")
+        print(f"---- estimated floor at {floor_height:.4f}m. ground_margin by {ground_margin}m. Total Offset: {offset_z:.4f}m")
         joints_np[..., 2] += offset_z
 
         return joints_np, source_fps
 
     def get_current_pose(self):
-        # 1. PRECISION TIMING LOOP (The only new addition)
-        # This fixes the Jitter without changing the velocity math.
         target_interval = self.dt
         now = time.perf_counter()
         elapsed = now - self.last_loop_time
         remaining = target_interval - elapsed
         
-        # Hybrid Sleep: Sleep for bulk, Spin for precision
         if remaining > 0:
             if remaining > 0.002:
                 time.sleep(remaining - 0.002)
@@ -132,7 +127,7 @@ class AmassStreamer:
         
         self.last_loop_time = time.perf_counter()
 
-        # 2. Interpolate
+        # Interpolate
         idx_0 = int(self.frame_cursor)
         idx_1 = idx_0 + 1
         alpha = self.frame_cursor - idx_0
@@ -191,7 +186,7 @@ if __name__ == "__main__":
         target_fps=args.fps, 
         scale=args.scale,
         rotate_z=args.rot,
-        use_neutral_shape = True
+        use_neutral_shape = False
     )
 
     app = web.Application()

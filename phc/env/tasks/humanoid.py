@@ -192,8 +192,10 @@ class Humanoid(BaseTask):
         contact_force_tensor = self.gym.acquire_net_contact_force_tensor(self.sim)
 
         # ZL: needs to put this back
-        if self.self_obs_v == 3:
-            sensors_per_env = len(self.force_sensor_joints)
+        if self.self_obs_v == 3 or self.log_forces:
+            sensors_per_env = len(self.force_sensor_joints) # number of joints equipped with sensors
+            
+            #6: each of sensors provides 6 values (3 forces + 3 torques)
             self.vec_sensor_tensor = gymtorch.wrap_tensor(sensor_tensor).view(self.num_envs, sensors_per_env * 6)
         
 
@@ -860,7 +862,7 @@ class Humanoid(BaseTask):
                     sk_tree = SkeletonTree.from_mjcf(asset_file_real)
 
                     # create force sensors at the feet
-                    if self.self_obs_v == 3:
+                    if self.self_obs_v == 3 or self.log_forces:
                         self.create_humanoid_force_sensors(humanoid_asset, self.force_sensor_joints)
                     
                     self.humanoid_shapes.append(torch.from_numpy(gender_beta).float())
@@ -880,7 +882,7 @@ class Humanoid(BaseTask):
                 motor_efforts = [prop.motor_effort for prop in actuator_props]
 
                 # create force sensors at the feet
-                if self.self_obs_v == 3:
+                if self.self_obs_v == 3 or self.log_forces:
                     self.create_humanoid_force_sensors(humanoid_asset, self.force_sensor_joints)
                 
                 
@@ -1647,18 +1649,35 @@ class Humanoid(BaseTask):
             self._update_tensor_history()
             
         self._refresh_sim_tensors()
-        
-        #To test: 
+
         #get torque/force after updates all Isaac tensors for the current simulation step
-        if getattr(self, "log_forces", False):
+        if getattr(self, "log_forces", False) and hasattr(self, "osc_sender"):
             env_id = 0
-            torques = self.dof_force_tensor[env_id].clone()
-            if self.self_obs_v == 3:
-                n_sensors = len(self.force_sensor_joints)
-                force_torques = self.vec_sensor_tensor[env_id].view(n_sensors, 6).clone()
-                print(f"{'-'*3}Env {env_id} Torques: {torques[:6]} ...")
-                print(f"{'-'*3}Env {env_id} Forces/Torques (Fx,Fy,Fz,Tx,Ty,Tz): {force_torques}")
-        
+            
+            #internal motor efforts the robot applies to itself to move itself
+            joint_torques = self.dof_force_tensor[env_id].clone()
+            
+            # #---for testing
+            # dof_names = self._dof_names
+            # reshaped_torques = joint_torques.reshape(-1, 3)
+            # print("--- Joint Torque Mapping ---")
+            # for name, torque in zip(dof_names, reshaped_torques):
+            #     print(f"{name}: {torque}")
+            
+            contact_forces = None
+            if self.vec_sensor_tensor is not None:
+                #Get Contact Forces (External ground reaction forces)
+                # Shape: [num_sensors, 6] (Fx, Fy, Fz, Tx, Ty, Tz)
+                
+                n_sensors = len(self.force_sensor_joints) # num of sensors for reading
+                contact_forces = self.vec_sensor_tensor[env_id].view(n_sensors, 6).clone()
+                
+                # #---for testing
+                # print("--- Contact Forces ---")
+                # print(f"{contact_forces}")
+            
+            self.osc_sender.update_data(joint_torques, contact_forces)
+    
     
         self._compute_reward(self.actions)  # ZL swapped order of reward & objecation computes. should be fine.
         self._compute_reset() 

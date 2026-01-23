@@ -83,22 +83,18 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
         
         # To test: TorqueForceSender to send out torque force
         if cfg["env"].get("log_forces", False):
-            print(f"{'*'*3}Starting TorqueForceSender streaming")
-            print(self.dof_force_tensor[0].detach().cpu().numpy())
-            # self.osc_sender = TorqueForceSender(
-            #     host="127.0.0.1",
-            #     port=9000,
-            #     fps=cfg["env"].get("fps", 30),
-            #     joint_names=self._dof_names,
-            #     sensor_names=getattr(self, "force_sensor_joints", []),
-            # )
-            # self.osc_sender.start(
-            #     get_torques=lambda: self.dof_force_tensor[0].detach().cpu().numpy(),
-            #     get_wrenches=(
-            #         lambda: self.vec_sensor_tensor[0].detach().cpu().numpy()
-            #         if self.self_obs_v == 3 else None
-            #     ),
-            # )
+            print(f"{'*'*3} Initializing TorqueForceSender...")
+            
+            # Pass dof_names so receiver knows that 
+            # index 0,1,2 = L_Hip_x, L_Hip_y, L_Hip_z, etc.
+            self.osc_sender = TorqueForceSender(
+                host="127.0.0.1",
+                port=9000,
+                fps=30,
+                joint_names=self._dof_names, 
+                sensor_names=getattr(self, "force_sensor_joints", [])
+            )
+            self.osc_sender.start()
         
     def _start_websocket_thread(self):
         loop = asyncio.new_event_loop()
@@ -297,6 +293,9 @@ class HumanoidImMCPDemo(humanoid_im_mcp.HumanoidImMCP):
             # print(self.mean_limb_lengths)
             scale = (limb_lengths/self.mean_limb_lengths).mean(axis = -1)
             ref_rb_pos /= scale[:, None, None]
+            
+            # trans /= scale[:, None, None]
+            
             ############################## Limb Length ##############################
             # s_dt = 1/30
 

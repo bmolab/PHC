@@ -2,25 +2,51 @@ from pythonosc.udp_client import SimpleUDPClient
 from pythonosc.osc_bundle_builder import OscBundleBuilder, IMMEDIATELY
 from pythonosc.osc_message_builder import OscMessageBuilder
 import numpy as np
-import threading, time
+import threading
+import time
 
 class TorqueForceSender:
-    def __init__(self, host="127.0.0.1", port=9000, fps=30, joint_names=None, sensor_names=None):
-        
-        self.client = SimpleUDPClient(host, port) #UDP socket for OSC
-        
-        self.fps = fps # desired send rate
-        self.dt = 1.0/fps
-        self.seq = 0 #frame counter
+    def __init__(self, host="127.0.0.1", port=9000, fps=60, joint_names=None, sensor_names=None):
+        self.client = SimpleUDPClient(host, port)
+        self.target_dt = 1.0 / fps
+        self.fps = fps
+        self.seq = 0
         self.joint_names = joint_names or []
         self.sensor_names = sensor_names or []
         
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
         self._thread = None
-
-    #to test: send  Send static information (joint & sensor names, units, etc.) to dpg
-    def send_joint_order_once(self):
         
+        # Buffers
+        self.latest_torques = None
+        self.latest_wrenches = None
+        self.lock = threading.Lock()
+        self.start_time = time.time()
+
+    def update_data(self, torques, wrenches=None):
+        """Call this from the main simulation loop"""
+        with self.lock:
+            # Ensure data is on CPU and Numpy before storing
+            if hasattr(torques, 'cpu'): torques = torques.detach().cpu().numpy()
+            if wrenches is not None and hasattr(wrenches, 'cpu'): wrenches = wrenches.detach().cpu().numpy()
+            
+            self.latest_torques = torques
+            self.latest_wrenches = wrenches
+
+    def start(self):
+        self._send_metadata()
+        self._stop_event.clear()
+        self.start_time = time.time()  # Reset start time
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        print(f"[TorqueForceSender] Streaming to {self.client._address}:{self.client._port}...")
+
+    def stop(self):
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=1.0)
+
+    def _send_metadata(self):
         if self.joint_names:
             msg = OscMessageBuilder(address="/rig/joint_order")
             for name in self.joint_names: msg.add_arg(name)
@@ -30,83 +56,54 @@ class TorqueForceSender:
             msg = OscMessageBuilder(address="/rig/sensor_order")
             for name in self.sensor_names: msg.add_arg(name)
             self.client.send(msg.build())
-        
-        #to test: vetify dpg side's requirement on coord system
-        meta2 = OscMessageBuilder(address="/meta2")
-        for s in ["Z-up","meters","N","N·m","SMPL local quats XYZW"]:
-            meta2.add_arg(s)
-        self.client.send(meta2.build())
 
-    #Start thread: sends OSC packets continuously
-    def start(self, get_torques, get_wrenches=None):
-        self.send_joint_order_once()
-        self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._run, args=(get_torques, get_wrenches), daemon=True
-        )
-        self._thread.start()
+    def _run(self):
+        while not self._stop_event.is_set():
+            loop_start = time.time()
+            
+            # 1. Get latest data
+            with self.lock:
+                torques = self.latest_torques
+                wrenches = self.latest_wrenches
 
-    #thread exit 
-    def stop(self,timeout_temp=1.0):
-        self._stop.set()
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=timeout_temp)
-
-    def _run(self, get_torques, get_wrenches):
-        t0 = time.time()
-        while not self._stop.is_set():
-            tic = time.time()
-                        
-            torques = get_torques() if get_torques else None # np.float32 [num_dof] OR [num_envs,num_dof]
-            wrenches = get_wrenches() if get_wrenches else None # np.float32 [num_sensors*6] or None
             if torques is None:
-                #skip this frame if data not ready
-                time.sleep(self.dt)
+                time.sleep(0.005)
                 continue
 
-            #pick env0 if a batch is provided
-            if hasattr(torques, "ndim") and torques.ndim == 2:
-                torques = torques[0]
-            if wrenches is not None and hasattr(wrenches, "ndim") and wrenches.ndim == 2:
-                wrenches = wrenches.reshape(-1)
-
-            #flatten to 1-D float32 arrays
-            torques = np.nan_to_num(torques.astype(np.float32)) 
-            if wrenches is not None:
-                wrenches = np.nan_to_num(wrenches.astype(np.float32))
-
-            # build one bundle per frame
+            # 2. Build Bundle
             bundle = OscBundleBuilder(IMMEDIATELY)
 
-            # /meta: [seq, elapsed_time_s, fps]
+            # --- FIX IS HERE ---
+            # Header info: Send exactly 3 arguments to match the receiver
             msg_meta = OscMessageBuilder(address="/meta")
-            msg_meta.add_arg(int(self.seq))
-            msg_meta.add_arg(float(time.time() - t0))   # to test: sim/stream time in sec
-            msg_meta.add_arg(int(self.fps))
+            msg_meta.add_arg(self.seq)
+            msg_meta.add_arg(float(time.time() - self.start_time)) # Elapsed Time
+            msg_meta.add_arg(int(self.fps))                        # FPS
             bundle.add_content(msg_meta.build())
+            # -------------------
 
-            # /rig/torques: flat list of all joint torques
+            # Send Torques
+            flat_torques = np.nan_to_num(torques.astype(np.float32)).flatten()
             msg_tau = OscMessageBuilder(address="/rig/torques")
-            for v in torques.flatten():
-                msg_tau.add_arg(v)
+            for v in flat_torques: msg_tau.add_arg(float(v))
             bundle.add_content(msg_tau.build())
-    
-            # /rig/wrenches message: 6D forces/torques
+
+            # Send Contact Forces
             if wrenches is not None:
+                flat_wrenches = np.nan_to_num(wrenches.astype(np.float32)).flatten()
                 msg_w = OscMessageBuilder(address="/rig/wrenches")
-                for v in wrenches.flatten():
-                    msg_w.add_arg(v)
+                for v in flat_wrenches: msg_w.add_arg(float(v))
                 bundle.add_content(msg_w.build())
-            
-            #Send bundle as one UDP datagram
+
+            # 3. Send
             try:
                 self.client.send(bundle.build())
                 self.seq += 1
-            except OSError as e:
-                print(f"OSC send failed: {e}")
-                pass
+            except Exception as e:
+                print(f"[TorqueSender Error] {e}")
 
-            # send at fixed fps
-            sleep_t = self.dt - (time.time() - tic)
-            if sleep_t > 0: 
-                time.sleep(sleep_t)
+            # 4. Sleep
+            elapsed = time.time() - loop_start
+            sleep_time = self.target_dt - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
